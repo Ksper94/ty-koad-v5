@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { loadStripe } from "@stripe/stripe-js";
 import {
@@ -22,13 +22,32 @@ function eur(n) {
   });
 }
 
-function CheckoutInner() {
-  const search = useSearchParams();
-  const stripe = useStripe();
-  const elements = useElements();
+export default function PayerPage() {
+  return (
+    <div>
+      <SiteHeader />
+      <div className="h-16" />
+      <div className="max-w-4xl mx-auto px-4 py-12">
+        <Suspense fallback={<div className="p-6">Préparation du paiement…</div>}>
+          <CheckoutShell />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
 
-  const amount = Math.round(Number(search.get("amount") || 0) * 100); // € -> cents
-  const deposit = Math.round(Number(search.get("deposit") || 0) * 100);
+/**
+ * Ce composant :
+ * - lit les paramètres d’URL (montant, dépôt, dates…)
+ * - appelle /api/stripe/create-payment-intent
+ * - récupère le clientSecret
+ * - configure <Elements> avec { clientSecret }
+ */
+function CheckoutShell() {
+  const search = useSearchParams();
+
+  const amountCents = Math.round(Number(search.get("amount") || 0) * 100); // € -> cents
+  const depositCents = Math.round(Number(search.get("deposit") || 0) * 100);
   const chalet = search.get("chalet");
   const ci = search.get("ci");
   const co = search.get("co");
@@ -37,44 +56,83 @@ function CheckoutInner() {
   const giftValueCents = Number(search.get("giftValue") || 0);
 
   const [clientSecret, setClientSecret] = useState(null);
-  const [status, setStatus] = useState("init"); // init | ready | paying | done | error
-  const [error, setError] = useState("");
+  const [fetchError, setFetchError] = useState("");
 
   useEffect(() => {
     (async () => {
-      setStatus("init");
-      const res = await fetch("/api/stripe/create-payment-intent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amountCents: amount,
-          depositCents: deposit,
-          chalet,
-          ci,
-          co,
-          nights,
-          giftCode: giftCode || undefined,
-          giftValueCents: giftValueCents || undefined,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
+      try {
+        const res = await fetch("/api/stripe/create-payment-intent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amountCents,
+            depositCents,
+            chalet,
+            ci,
+            co,
+            nights,
+            giftCode: giftCode || undefined,
+            giftValueCents: giftValueCents || undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setFetchError(data.error || "Erreur lors de la préparation du paiement.");
+          return;
+        }
         setClientSecret(data.clientSecret);
-        setStatus("ready");
-      } else {
-        setStatus("error");
-        setError(data.error || "Erreur");
+      } catch (e) {
+        setFetchError(e.message || "Erreur réseau.");
       }
     })();
-  }, []); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (fetchError) {
+    return (
+      <div className="p-6 rounded-2xl border bg-white text-red-700">
+        {fetchError}
+      </div>
+    );
+  }
+
+  if (!clientSecret) {
+    return <div className="p-6">Préparation du paiement…</div>;
+  }
+
+  return (
+    <Elements stripe={stripePromise} options={{ clientSecret }}>
+      <CheckoutInner
+        amountCents={amountCents}
+        depositCents={depositCents}
+        giftCode={giftCode}
+      />
+    </Elements>
+  );
+}
+
+/**
+ * Ce composant :
+ * - affiche PaymentElement
+ * - gère le bouton “Payer”
+ * - confirme le paiement et marque le code cadeau comme consommé
+ */
+function CheckoutInner({ amountCents, depositCents, giftCode }) {
+  const stripe = useStripe();
+  const elements = useElements();
+
+  const [status, setStatus] = useState("ready"); // ready | paying | done | error
+  const [error, setError] = useState("");
 
   async function pay() {
     if (!stripe || !elements) return;
     setStatus("paying");
+
     const { error: err } = await stripe.confirmPayment({
       elements,
       redirect: "if_required",
     });
+
     if (err) {
       setError(err.message || "Erreur");
       setStatus("error");
@@ -89,54 +147,39 @@ function CheckoutInner() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ code: giftCode }),
         });
-      } catch {}
+      } catch {
+        // on ignore l'erreur ici pour ne pas bloquer le client
+      }
     }
+
     setStatus("done");
   }
-
-  if (!clientSecret)
-    return <div className="p-6">Préparation du paiement…</div>;
 
   return (
     <div className="max-w-md mx-auto bg-white border rounded-2xl p-5">
       <div className="text-sm text-stone-600 mb-2">
-        Total à payer : <b>{eur(amount)}</b>
+        Total à payer : <b>{eur(amountCents)}</b>
         {giftCode && ` (bon appliqué)`}
         <br />
-        Caution (séparée) : {eur(deposit)}
+        Caution (séparée) : {eur(depositCents)}
       </div>
+
       <PaymentElement />
+
       <button
         onClick={pay}
         disabled={status !== "ready"}
-        className="w-full mt-4 px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm"
+        className="w-full mt-4 px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm disabled:bg-stone-200 disabled:text-stone-500 disabled:cursor-not-allowed"
       >
         {status === "paying" ? "Paiement en cours…" : "Payer"}
       </button>
+
       {status === "done" && (
         <div className="mt-3 text-emerald-800">Merci ! Paiement confirmé.</div>
       )}
       {status === "error" && (
         <div className="mt-3 text-red-700">{error}</div>
       )}
-    </div>
-  );
-}
-
-export default function PayerPage() {
-  return (
-    <div>
-      <SiteHeader />
-      <div className="h-16" />
-      <div className="max-w-4xl mx-auto px-4 py-12">
-        <Elements stripe={stripePromise}>
-          <Suspense
-            fallback={<div className="p-6">Préparation du paiement…</div>}
-          >
-            <CheckoutInner />
-          </Suspense>
-        </Elements>
-      </div>
     </div>
   );
 }
