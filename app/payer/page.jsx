@@ -37,11 +37,7 @@ export default function PayerPage() {
 }
 
 /**
- * Ce composant :
- * - lit les paramètres d’URL (montant, dépôt, dates…)
- * - appelle /api/stripe/create-payment-intent
- * - récupère le clientSecret
- * - configure <Elements> avec { clientSecret }
+ * Récupère le clientSecret via l’API puis installe <Elements>
  */
 function CheckoutShell() {
   const search = useSearchParams();
@@ -76,8 +72,10 @@ function CheckoutShell() {
           }),
         });
         const data = await res.json();
-        if (!res.ok) {
-          setFetchError(data.error || "Erreur lors de la préparation du paiement.");
+        if (!res.ok || !data.clientSecret) {
+          setFetchError(
+            data.error || "Erreur lors de la préparation du paiement."
+          );
           return;
         }
         setClientSecret(data.clientSecret);
@@ -112,10 +110,7 @@ function CheckoutShell() {
 }
 
 /**
- * Ce composant :
- * - affiche PaymentElement
- * - gère le bouton “Payer”
- * - confirme le paiement et marque le code cadeau comme consommé
+ * Affiche PaymentElement et gère le bouton "Payer"
  */
 function CheckoutInner({ amountCents, depositCents, giftCode }) {
   const stripe = useStripe();
@@ -148,7 +143,7 @@ function CheckoutInner({ amountCents, depositCents, giftCode }) {
           body: JSON.stringify({ code: giftCode }),
         });
       } catch {
-        // on ignore l'erreur ici pour ne pas bloquer le client
+        // on ignore pour ne pas bloquer le client
       }
     }
 
